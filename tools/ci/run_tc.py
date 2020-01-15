@@ -36,11 +36,14 @@ the serialization of a GitHub event payload.
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from socket import error as SocketError  # NOQA: N812
 import errno
 try:
@@ -169,10 +172,10 @@ def install_webkitgtk_from_apt_repository(channel):
     run(["sudo", "apt-get", "-qqy", "-t", "bionic-wpt-webkit-updates", "install", "webkit2gtk-driver"])
 
 
-# Download an URL in chunks and saves it to a file descriptor (truncating it)
-# It doesn't close the descriptor, but flushes it on success.
-# It retries the download in case of ECONNRESET up to max_retries.
 def download_url_to_descriptor(fd, url, max_retries=3):
+    """Download an URL in chunks and saves it to a file descriptor (truncating it)
+       It doesn't close the descriptor, but flushes it on success.
+       It retries the download in case of ECONNRESET up to max_retries."""
     download_succeed = False
     if max_retries < 0:
         max_retries = 0
@@ -246,7 +249,57 @@ def set_variables(event):
         os.environ["GITHUB_BRANCH"] = branch
 
 
+def task_url(task_id):
+    root_url = os.environ['TASKCLUSTER_ROOT_URL']
+    if root_url == 'https://taskcluster.net':
+        queue_base = "https://queue.taskcluster.net/v1/task"
+    else:
+        queue_base = root_url + "/api/queue/v1/task"
+
+    return "%s/%s" % (queue_base, task_id)
+
+
+def download_artifacts(artifacts):
+    artifact_list_by_task = {}
+    for artifact in artifacts:
+        base_url = task_url(artifact["task"])
+        if artifact["task"] not in artifact_list_by_task:
+            resp = urlopen(base_url + "/artifacts")
+            artifacts_data = json.load(resp)
+            artifact_list_by_task[artifact["task"]] = artifacts_data
+
+        artifacts_data = artifact_list_by_task[artifact["task"]]
+        for candidate in artifacts_data["artifacts"]:
+            if fnmatch.fnmatch(candidate["name"], artifact["name"]):
+                file_name = candidate["name"].rsplit("/", 1)[1]
+                url = base_url + "/artifacts/" + candidate["name"]
+                dest_path = os.path.expanduser(os.path.join("~", artifact["dest"], file_name))
+                with open(dest_path, "wb") as f:
+                    download_url_to_descriptor(f, url)
+
+            if artifact.get("extract"):
+                unpack(dest_path)
+
+
+def unpack(path):
+    dest = os.path.dirname(path)
+    if tarfile.is_tarfile(path):
+        cls = tarfile.TarFile
+    elif zipfile.is_zipfile(path):
+        cls = zipfile.ZipFile(path)
+    else:
+        print("ERROR: Don't know how to extract %s" % path)
+        raise Exception
+
+    with cls(path) as archive:
+        archive.extractall(dest)
+
+
 def setup_environment(args):
+    if "TASK_ARTIFACTS" in os.environ:
+        artifacts = json.loads(os.environ["TASK_ARTIFACTS"])
+        download_artifacts(artifacts)
+
     if args.hosts_file:
         make_hosts_file()
 
@@ -364,15 +417,8 @@ def fetch_event_data():
         # For example under local testing
         return None
 
-    root_url = os.environ['TASKCLUSTER_ROOT_URL']
-    if root_url == 'https://taskcluster.net':
-        queue_base = "https://queue.taskcluster.net/v1/task"
-    else:
-        queue_base = root_url + "/api/queue/v1/task"
-
-
-    resp = urlopen("%s/%s" % (queue_base, task_id))
-
+    url = task_url(task_id)
+    resp = urlopen(url)
     task_data = json.load(resp)
     event_data = task_data.get("extra", {}).get("github_event")
     if event_data is not None:

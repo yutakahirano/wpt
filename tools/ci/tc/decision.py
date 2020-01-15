@@ -213,7 +213,7 @@ def get_owner(event):
     return "web-platform-tests@users.noreply.github.com"
 
 
-def create_tc_task(event, task, taskgroup_id, depends_on_ids):
+def create_tc_task(event, task, taskgroup_id, depends_on_ids, env_extra=None):
     command = build_full_command(event, task)
     task_id = taskcluster.slugId()
     task_data = {
@@ -240,10 +240,22 @@ def create_tc_task(event, task, taskgroup_id, depends_on_ids):
             "github_event": json.dumps(event)
         }
     }
+    if env_extra:
+        task_data["payload"]["env"].update(env_extra)
     if depends_on_ids:
         task_data["dependencies"] = depends_on_ids
         task_data["requires"] = "all-completed"
     return task_id, task_data
+
+
+def get_artifact_data(artifact, task_id_map):
+    task_id, data = task_id_map[artifact["task"]]
+    return {
+        "task": task_id,
+        "artifact": artifact["artifact"],
+        "dest": artifact["dest"],
+        "extract": artifact.get("extract", False)
+    }
 
 
 def build_task_graph(event, all_tasks, tasks):
@@ -258,7 +270,14 @@ def build_task_graph(event, all_tasks, tasks):
                     add_task(depends_name,
                              all_tasks[depends_name])
                 depends_on_ids.append(task_id_map[depends_name][0])
-        task_id, task_data = create_tc_task(event, task, taskgroup_id, depends_on_ids)
+        env_extra = {}
+        if "download-artifacts" in tasks:
+            env_extra["TASK_ARTIFACTS"] = json.dumps(
+                [get_artifact_data(artifact, task_id_map)
+                 for artifact in task["download-artifacts"]])
+
+        task_id, task_data = create_tc_task(event, task, taskgroup_id, depends_on_ids,
+                                            env_extra)
         task_id_map[task_name] = (task_id, task_data)
 
     for task_name, task in iteritems(tasks):
