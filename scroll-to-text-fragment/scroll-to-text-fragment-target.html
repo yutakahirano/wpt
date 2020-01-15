@@ -64,7 +64,7 @@ function checkScroll() {
     display: none;
   }
 </style>
-<body onload="window.requestAnimationFrame(checkScroll)">
+<body onload="window.requestAnimationFrame(() => {window.requestAnimationFrame(checkScroll)})">
   <div id="element" class="scroll-section">Element</div>
   <p id="text" class="scroll-section">This is a test page !$'()*+./:;=?@_~ &,- &#x30cd;&#x30b3;</p>
   <p id="more-text" class="scroll-section">More test page text</p>
