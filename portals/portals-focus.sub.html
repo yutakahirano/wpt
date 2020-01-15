@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
 <script src="resources/open-blank-host.js"></script>
 <body>
 <script>
@@ -18,7 +20,8 @@
       assert_unreached("button inside portal should not be focused");
     });
     portal.postMessage("focus", "*");
-    return new Promise(r => t.step_timeout(r, 500));
+    await new Promise(r => t.step_timeout(r, 500));
+    document.body.removeChild(portal);
   }, "test that an element inside a portal cannot steal focus");
 
   promise_test(async t => {
@@ -27,7 +30,8 @@
       assert_unreached("button inside portal should not be focused");
     });
     portal.postMessage("focus", "*");
-    return new Promise(r => t.step_timeout(r, 500));
+    await new Promise(r => t.step_timeout(r, 500));
+    document.body.removeChild(portal);
   }, "test that an element inside a portal's x-origin subframe cannot steal focus");
 
   promise_test(async t => {
@@ -45,7 +49,8 @@
       assert_unreached("button inside adopted portal should not be focused");
     });
     button.focus();
-    return new Promise(r => t.step_timeout(r, 500));
+    await new Promise(r => t.step_timeout(r, 500));
+    win.close();
   }, "test that an element inside an adopted portal cannot steal focus");
 
   promise_test(async t => {
@@ -67,6 +72,20 @@
       assert_unreached("button inside x-origin iframe inside a portal should not be focused");
     });
     await new Promise(r => t.step_timeout(r, 500));
+    win.close();
   }, "test that a x-origin iframe inside an adopted portal cannot steal focus");
+
+  const TAB = "\ue004";
+  promise_test(async t => {
+    let portal = await createPortal(document, "resources/focus-page-with-button.html");
+    portal.tabIndex = 0;
+    await test_driver.send_keys(document.body, TAB);
+    portal.onmessage = t.step_func(e => {
+      assert_unreached("button inside portal should not be focused");
+    });
+    await new Promise(r => t.step_timeout(r, 500));
+    document.body.removeChild(portal);
+  }, "test that we cannot tab into a portal's contents");
+
 </script>
 </body>
