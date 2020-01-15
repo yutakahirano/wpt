@@ -1,0 +1,177 @@
+<!doctype html>
+<script src='/resources/testharness.js'></script>
+<script src='/resources/testharnessreport.js'></script>
+<script src="/resources/check-layout-th.js"></script>
+<link rel="author" title="Aleks Totic" href="atotic@chromium.org" />
+<link rel="help" href="https://www.w3.org/TR/css-tables-3/#distributing-width-to-columns" />
+<style>
+
+  table {
+    border-spacing: 0;
+    outline: dotted 1px gray;
+    margin-top: 8px;
+  }
+  tbody tr:nth-child(1) {
+    background: #DDD;
+  }
+  tbody tr:nth-child(2) {
+    background: #CCC;
+  }
+  td {
+    padding: 0;
+  }
+  .ten {
+    display: inline-block;
+    width: 10px;
+  }
+  .ten:after {
+    content: "10";
+    font-size: 8px;
+  }
+  .tenq {
+    display: inline-block;
+    width: 10px;
+    font-size: 8px;
+  }
+  .twenty {
+    display: inline-block;
+    width: 20px;
+  }
+  .twenty:after {
+    content: "20";
+  }
+  .forty {
+    display: inline-block;
+    width: 40px;
+  }
+  .forty:after {
+    content: "40";
+  }
+  .fifty {
+    display: inline-block;
+    width: 50px;
+  }
+  .fifty:after {
+    content: "50";
+  }
+  .wide {
+    display: inline-block;
+    width: 360px;
+  }
+  .wide:after {
+    content: "wide";
+  }
+  .doublewide {
+    display: inline-block;
+    width: 720px;
+  }
+  .doublewide:after {
+    content: "doublewide";
+  }
+</style>
+<h1>Tests width distribution of wide cells <tt>(colspan > 1)</tt> cells to spanned cells</h1>
+
+<p>1) Wide cells max width distribution to unconstrained cells:</p>
+<li>gets distributed to spanned cells max width.</li>
+<li>in proportion to spanned cell's intrinsic max width.</li>
+<div id="one">
+  <p>cell 1 minmax: 20,20. cell 2 minmax: 40,40.</p>
+  <table data-expected-width="720">
+    <tr>
+      <td data-expected-width="240"><div class="twenty" ></div></td>
+      <td data-expected-width="480"><div class="forty" ></div></td>
+    </tr>
+    <tr>
+      <td colspan="2"><div class="wide"></div><div class="wide"></div></td>
+    </tr>
+  </table>
+  <p>cell 1 minmax: 10,20. cell 2 minmax: 10,40.</p>
+  <table data-expected-width="720">
+    <tr>
+      <td data-expected-width="240"><div class="ten"></div><div class="ten" ></div></td>
+      <td data-expected-width="480"><div class="ten"></div><div class="ten" ></div><div class="ten" ></div><div class="ten" ></div></td>
+    </tr>
+    <tr>
+      <td colspan="2"><div class="wide"></div><div class="wide"></div></td>
+    </tr>
+  </table>
+</div>
+<p>2) Wide cells min width gets distributed to:</p>
+<li>spanned cells min width.</li>
+<li>new min width is redistributable distributing min width * (cell.max_width / total max width)
+<div id="two" style="width:200px">
+  <p>cell 1 minmax: 20,20. cell 2 minmax: 40,40.</p>
+  <table data-expected-width="360">
+    <tr>
+      <td data-expected-width="120"><div class="twenty" ></div></td>
+      <td data-expected-width="240"><div class="forty" ></div></td>
+    </tr>
+    <tr>
+      <td colspan="2"><div class="wide"></div><div class="wide"></div></td>
+    </tr>
+  </table>
+  <p>cell 1 minmax: 10,20. cell 2 minmax: 10,80.</p>
+  <table data-expected-width="360">
+    <tr>
+      <td data-expected-width="60"><div class="ten"></div><div class="ten" ></div></td>
+      <td data-expected-width="300"><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div><div class="ten"></div></td>
+    </tr>
+    <tr>
+      <td colspan="2"><div class="wide"></div><div class="wide"></div></td>
+    </tr>
+  </table>
+    <table data-expected-width="360">
+    <tr>
+      <td data-expected-width="60"><div class="ten"></div><div class="ten" ></div></td>
+      <td data-expected-width="300"><div class="twenty"></div><div class="twenty"></div><div class="twenty"></div><div class="twenty"></div><div class="twenty"></div></td>
+    </tr>
+    <tr>
+      <td colspan="2"><div class="wide"></div><div class="wide"></div></td>
+    </tr>
+  </table>
+</div>
+<p>3) Wide cell percentage redistribution over pixels/percentages</p>
+<div id="three" style="width:500px">
+  <li>10% wide cell gets distributed to 2 spaned cells, which get 5% each.</li>
+  <li>spanners with min_width(10px), and percent(5%) triggers percent_minsize gridmin formula, resulting in 200px table width.
+  <table data-expected-width="200px">
+    <tr>
+      <td><div class="ten"></div></td>
+      <td><div class="ten"></div></td>
+    </tr>
+    <tr>
+      <td colspan=2 style="width:10%"><div class="tenq">10%</div></td>
+    </tr>
+  </table>
+  <li>one spanned has 6%. The other spanner gets 4%. 4% determines gridmin with percent_minsize formula.</li>
+  <table data-expected-width="250">
+    <tr>
+      <td data-expected-width="100"><div class="ten"></div></td>
+      <td data-expected-width="150" width="6%"><div class="tenq">6%</div></td>
+    </tr>
+    <tr>
+      <td colspan=2 style="width:10%"><div class="tenq">10%</div></td>
+    </tr>
+  </table>
+  <li>redistributing 100%</li>
+  <li>each span cell gets 50%. Because there are no non-percentage cells, pure min_width wins</li>
+  <table data-expected-width="20">
+    <tr>
+      <td data-expected-width="10"><div class="ten"></div></td>
+      <td data-expected-width="10"><div class="ten"></div></td>
+    </tr>
+    <tr>
+      <td colspan=2 style="width:100%"><div class="tenq">100%</div></td>
+    </tr>
+  </table>
+  <table width=100% >
+<tr><td>URL: <td width=100%><input ></tr>
+<tr><td colspan=2 >Alongwordtogiveyouanicebigminwidth.</td>
+</td></tr>
+</table>
+
+<script>
+  checkLayout("#one", false);
+  checkLayout("#two", false);
+  checkLayout("#three");
+</script>
