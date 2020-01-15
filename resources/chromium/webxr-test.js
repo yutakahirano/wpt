@@ -231,6 +231,11 @@ class MockRuntime {
     this.input_sources_ = new Map();
     this.next_input_source_index_ = 1;
 
+    // Currently active hit test subscriptons.
+    this.hitTestSubscriptions_ = new Map();
+    // ID of the next subscription to be assigned.
+    this.next_hit_test_id_ = 1;
+
     let supportedModes = [];
     if (fakeDeviceInit.supportedModes) {
       supportedModes = fakeDeviceInit.supportedModes.slice();
@@ -577,18 +582,22 @@ class MockRuntime {
     now += diff;
     now *= 1000000;
 
+    let frameData = {
+      pose: this.pose_,
+      mojoSpaceReset: mojo_space_reset,
+      inputState: input_state,
+      timeDelta: {
+        microseconds: now,
+      },
+      frameId: this.next_frame_id_++,
+      bufferHolder: null,
+      bufferSize: {}
+    };
+
+    this.calculateHitTestResults_(frameData);
+
     return Promise.resolve({
-      frameData: {
-        pose: this.pose_,
-        mojoSpaceReset: mojo_space_reset,
-        inputState: input_state,
-        timeDelta: {
-          microseconds: now,
-        },
-        frameId: this.next_frame_id_++,
-        bufferHolder: null,
-        bufferSize: {}
-      }
+      frameData: frameData
     });
   }
 
@@ -612,6 +621,51 @@ class MockRuntime {
   updateSessionGeometry(frame_size, display_rotation) {
     // This function must exist to ensure that calls to it do not crash, but we
     // do not have any use for this data at present.
+  }
+
+  // XREnvironmentIntegrationProvider implementation:
+  subscribeToHitTest(nativeOriginInformation, entityTypes, ray) {
+    if(!this.supportedModes_.includes(device.mojom.XRSessionMode.kImmersiveAr)) {
+      // Reject outside of AR.
+      return Promise.resolve({
+        result : device.mojom.SubscribeToHitTestResult.FAILED,
+        subscriptionId : 0
+      });
+    }
+
+    if(nativeOriginInformation.$tag == device.mojom.XRNativeOriginInformation.Tags.inputSourceId) {
+      if(!this.input_sources_.has(nativeOriginInformation.inputSourceId)) {
+        // Reject - unknown input source ID.
+        return Promise.resolve({
+          result : device.mojom.SubscribeToHitTestResult.FAILED,
+          subscriptionId : 0
+        });
+      }
+    } else if(nativeOriginInformation.$tag == device.mojom.XRNativeOriginInformation.Tags.referenceSpaceCategory) {
+      // Bounded_floor & unbounded ref spaces are not yet supported for AR:
+      if(nativeOriginInformation.referenceSpaceCategory == device.mojom.XRReferenceSpaceCategory.UNBOUNDED
+      || nativeOriginInformation.referenceSpaceCategory == device.mojom.XRReferenceSpaceCategory.BOUNDED_FLOOR) {
+        return Promise.resolve({
+          result : device.mojom.SubscribeToHitTestResult.FAILED,
+          subscriptionId : 0
+        });
+      }
+    } else {
+      // Planes and anchors are not yet supported by the mock interface.
+      return Promise.resolve({
+        result : device.mojom.SubscribeToHitTestResult.FAILED,
+        subscriptionId : 0
+      });
+    }
+
+    // Store the subscription information as-is:
+    const id = this.next_hit_test_id_++;
+    this.hitTestSubscriptions_.set(id, { nativeOriginInformation, entityTypes, ray });
+
+    return Promise.resolve({
+      result : device.mojom.SubscribeToHitTestResult.SUCCESS,
+      subscriptionId : id
+    });
   }
 
   // Utility function
@@ -673,6 +727,465 @@ class MockRuntime {
     return Promise.resolve({
       supportsSession: this.supportedModes_.includes(options.mode)
     });
+  }
+
+  // Private functions - hit test implementation:
+
+  // Modifies passed in frameData to add hit test results.
+  calculateHitTestResults_(frameData) {
+    if(!this.supportedModes_.includes(device.mojom.XRSessionMode.kImmersiveAr)) {
+      return;
+    }
+
+    frameData.hitTestSubscriptionResults = new device.mojom.XRHitTestSubscriptionResultsData();
+    frameData.hitTestSubscriptionResults.results = [];
+    frameData.hitTestSubscriptionResults.transientInputResults = [];
+
+    if(!this.world_) {
+      return;
+    }
+
+    // Non-transient hit test:
+    for(const [id, subscription] of this.hitTestSubscriptions_) {
+      const mojo_from_native_origin = this.getMojoFromNativeOrigin_(subscription.nativeOriginInformation);
+      if(!mojo_from_native_origin) continue;
+
+      const ray_origin = {x: subscription.ray.origin.x, y: subscription.ray.origin.y, z: subscription.ray.origin.z, w: 1};
+      const ray_direction = {x: subscription.ray.direction.x, y: subscription.ray.direction.y, z: subscription.ray.direction.z, w: 0};
+
+      const mojo_ray_origin = XRMathHelper.transform_by_matrix(mojo_from_native_origin, ray_origin);
+      const mojo_ray_direction = XRMathHelper.transform_by_matrix(mojo_from_native_origin, ray_direction);
+
+      console.log("Ray origin: " + XRMathHelper.toString(mojo_ray_origin))
+
+      const results = this.hitTestWorld_(mojo_ray_origin, mojo_ray_direction, subscription.entityTypes);
+
+      const result = new device.mojom.XRHitTestSubscriptionResultData();
+      result.subscriptionId = id;
+      result.hitTestResults = results;
+
+      frameData.hitTestSubscriptionResults.results.push(result);
+    }
+  }
+
+  // Hit tests the passed in ray (expressed as origin and direction) against the mocked world data.
+  hitTestWorld_(origin, direction, entityTypes) {
+    let result = [];
+
+    for(const region of this.world_.hitTestRegions) {
+      const partial_result = this.hitTestRegion_(
+        region,
+        origin, direction,
+        entityTypes);
+
+      result = result.concat(partial_result);
+    }
+
+    return result.sort((lhs, rhs) => lhs.distance - rhs.distance);
+  };
+
+  // Hit tests the passed in ray (expressed as origin and direction) against world region.
+  // |entityTypes| is a set of FakeXRRegionTypes.
+  // |region| is FakeXRRegion.
+  // Returns array of XRHitResults, each entry will be decorated with the distance from the ray origin (along the ray).
+  hitTestRegion_(region, origin, direction, entityTypes) {
+    const regionNameToMojoEnum = {
+      "point":device.mojom.EntityTypeForHitTest.POINT,
+      "plane":device.mojom.EntityTypeForHitTest.PLANE,
+      "mesh":null
+    };
+
+    if(!entityTypes.includes(regionNameToMojoEnum[region.type])) {
+      return [];
+    }
+
+    const result = [];
+    for(const face of region.faces) {
+      const maybe_hit = this.hitTestFace_(face, origin, direction);
+      if(maybe_hit) {
+        result.push(maybe_hit);
+      }
+    }
+
+    // The results should be sorted by distance and there should be no 2 entries with
+    // the same distance from ray origin - that would mean they are the same point.
+    // This situation is possible when a ray intersects the region through an edge shared
+    // by 2 faces.
+    return result.sort((lhs, rhs) => lhs.distance - rhs.distance)
+                 .filter((val, index, array) => index === 0 || val.distance !== array[index - 1].distance);
+  }
+
+  // Hit tests the passed in ray (expressed as origin and direction) against a single face.
+  // |face|, |origin|, and |direction| are specified in world (aka mojo) coordinates.
+  // |face| is an array of DOMPointInits.
+  // Returns null if the face does not intersect with the ray, otherwise the result is
+  // an XRHitResult with matrix describing the pose of the intersection point.
+  hitTestFace_(face, origin, direction) {
+    const add = XRMathHelper.add;
+    const sub = XRMathHelper.sub;
+    const mul = XRMathHelper.mul;
+    const normalize = XRMathHelper.normalize;
+    const dot = XRMathHelper.dot;
+    const cross = XRMathHelper.cross;
+    const neg = XRMathHelper.neg;
+
+    //1. Calculate plane normal in world coordinates.
+    const point_A = face[0];
+    const point_B = face[1];
+    const point_C = face[2];
+
+    const edge_AB = sub(point_B, point_A);
+    const edge_AC = sub(point_C, point_A);
+
+    const normal = normalize(cross(edge_AB, edge_AC));
+
+    const numerator = dot(sub(point_A, origin), normal);
+    const denominator = dot(direction, normal);
+
+    if(Math.abs(denominator) < 0.0001) {
+      // Planes are parallel - there's either infinitely many intersection points or 0.
+      // Both cases signify a "no hit" for us.
+      return null;
+    } else {
+      // Single intersection point between the infinite plane and the line (*not* ray).
+      // Need to calculate the hit test matrix taking into account the face vertices.
+      const distance = numerator / denominator;
+      if(distance < 0) {
+        // Line - plane intersection exists, but not the half-line - plane does not.
+        return null;
+      } else {
+        const intersection_point = add(origin, mul(distance, direction));
+        // Since we are treating the face as a solid, flip the normal so that its
+        // half-space will contain the ray origin.
+        const y_axis = denominator > 0 ? neg(normal) : normal;
+
+        let z_axis = null;
+        const cos_direction_and_y_axis = dot(direction, y_axis);
+        if(Math.abs(cos_direction_and_y_axis) > 0.9999) {
+          // Ray and the hit test normal are co-linear - try using the 'up' or 'right' vector's projection on the face plane as the Z axis.
+          // Note: this edge case is currently not covered by the spec.
+          const up = {x: 0.0, y: 1.0, z: 0.0, w: 0.0};
+          const right = {x:1.0, y: 0.0, z: 0.0, w: 0.0};
+
+          z_axis = Math.abs(dot(up, y_axis)) > 0.9999
+                        ? sub(up, mul(dot(right, y_axis), y_axis))  // `up is also co-linear with hit test normal, use `right`
+                        : sub(up, mul(dot(up, y_axis), y_axis));    // `up` is not co-linear with hit test normal, use it
+        } else {
+          // Project the ray direction onto the plane, negate it and use as a Z axis.
+          z_axis = neg(sub(direction, mul(cos_direction_and_y_axis, y_axis))); // Z should point towards the ray origin, not away.
+        }
+
+        const x_axis = normalize(cross(y_axis, z_axis));
+
+        // Filter out the points not in polygon.
+        if(!XRMathHelper.pointInFace(intersection_point, face)) {
+          return null;
+        }
+
+        const hitResult = new device.mojom.XRHitResult();
+        hitResult.hitMatrix = new gfx.mojom.Transform();
+
+        hitResult.distance = distance;  // Extend the object with additional information used by higher layers.
+                                        // It will not be serialized over mojom.
+
+        hitResult.hitMatrix.matrix = new Array(16);
+
+        hitResult.hitMatrix.matrix[0] = x_axis.x;
+        hitResult.hitMatrix.matrix[1] = x_axis.y;
+        hitResult.hitMatrix.matrix[2] = x_axis.z;
+        hitResult.hitMatrix.matrix[3] = 0;
+
+        hitResult.hitMatrix.matrix[4] = y_axis.x;
+        hitResult.hitMatrix.matrix[5] = y_axis.y;
+        hitResult.hitMatrix.matrix[6] = y_axis.z;
+        hitResult.hitMatrix.matrix[7] = 0;
+
+        hitResult.hitMatrix.matrix[8] = z_axis.x;
+        hitResult.hitMatrix.matrix[9] = z_axis.y;
+        hitResult.hitMatrix.matrix[10] = z_axis.z;
+        hitResult.hitMatrix.matrix[11] = 0;
+
+        hitResult.hitMatrix.matrix[12] = intersection_point.x;
+        hitResult.hitMatrix.matrix[13] = intersection_point.y;
+        hitResult.hitMatrix.matrix[14] = intersection_point.z;
+        hitResult.hitMatrix.matrix[15] = 1;
+
+        return hitResult;
+      }
+    }
+  }
+
+  getMojoFromNativeOrigin_(nativeOriginInformation) {
+    const identity = function() {
+      return [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ];
+    };
+
+    if(nativeOriginInformation.$tag == device.mojom.XRNativeOriginInformation.Tags.inputSourceId) {
+      if(!this.input_sources_.has(nativeOriginInformation.inputSourceId)) {
+        return null;
+      } else {
+        const inputSource = this.input_sources_.get(nativeOriginInformation.inputSourceId);
+        return inputSource.mojo_from_input_.matrix;
+      }
+    } else if(nativeOriginInformation.$tag == device.mojom.XRNativeOriginInformation.Tags.referenceSpaceCategory) {
+      switch(nativeOriginInformation.referenceSpaceCategory) {
+        case device.mojom.XRReferenceSpaceCategory.LOCAL:
+          return identity();
+        case device.mojom.XRReferenceSpaceCategory.LOCAL_FLOOR:
+          if(this.displayInfo_ == null || this.displayInfo_.stageParameters == null
+          || this.displayInfo_.stageParameters.standingTransform == null) {
+            console.warn("Standing transform not available.");
+            return null;
+          }
+          // this.displayInfo_.stageParameters.standingTransform = floor_from_mojo aka native_origin_from_mojo
+          return XRMathHelper.inverse(this.displayInfo_.stageParameters.standingTransform.matrix);
+        case device.mojom.XRReferenceSpaceCategory.VIEWER:
+          const transform = {
+            position: [
+              this.pose_.position.x,
+              this.pose_.position.y,
+              this.pose_.position.z],
+            orientation: [
+              this.pose_.orientation.x,
+              this.pose_.orientation.y,
+              this.pose_.orientation.z,
+              this.pose_.orientation.w],
+          };
+          return getMatrixFromTransform(transform);  // this.pose_ = mojo_from_viewer
+        case device.mojom.XRReferenceSpaceCategory.BOUNDED_FLOOR:
+          return null;
+        case device.mojom.XRReferenceSpaceCategory.UNBOUNDED:
+          return null;
+        default:
+          throw new TypeError("Unrecognized XRReferenceSpaceCategory!");
+      }
+    } else {
+      // Anchors & planes are not yet supported for hit test.
+      return null;
+    }
+  }
+}
+
+// Math helper - used mainly in hit test implementation.
+class XRMathHelper{
+  static toString(p) {
+    return "[" + p.x + "," + p.y + "," + p.z + "," + p.w + "]";
+  };
+
+  static transform_by_matrix(matrix, point) {
+    return {
+      x : matrix[0] * point.x + matrix[4] * point.y + matrix[8] * point.z + matrix[12] * point.w,
+      y : matrix[1] * point.x + matrix[5] * point.y + matrix[9] * point.z + matrix[13] * point.w,
+      z : matrix[2] * point.x + matrix[6] * point.y + matrix[10] * point.z + matrix[14] * point.w,
+      w : matrix[3] * point.x + matrix[7] * point.y + matrix[11] * point.z + matrix[15] * point.w,
+    };
+  }
+
+  static neg(p) {
+    return {x : -p.x, y : -p.y, z : -p.z, w : p.w};
+  }
+
+  static sub(lhs, rhs) {
+    // .w is treated here like an entity type, 1 signifies poins, 0 signifies vectors.
+    // point - point, point - vector, vector - vector are ok, vector - point is not.
+    if(lhs.w != rhs.w && lhs.w == 0.0){
+      console.warn("vector - point not allowed: " + toString(lhs) + "-" + toString(rhs));
+    }
+
+    return {x : lhs.x - rhs.x, y : lhs.y - rhs.y, z : lhs.z - rhs.z, w : lhs.w - rhs.w};
+  }
+
+  static add(lhs, rhs) {
+    if(lhs.w == rhs.w && lhs.w == 1.0) {
+      console.warn("point + point not allowed", p1, p2);
+    }
+
+    return {x : lhs.x + rhs.x, y : lhs.y + rhs.y, z : lhs.z + rhs.z, w : lhs.w + rhs.w};
+  };
+
+  static cross(lhs, rhs) {
+    if(lhs.w != 0.0 || rhs.w != 0.0){
+      console.warn("cross product not allowed: " + toString(lhs) + "x" + toString(rhs));
+    }
+
+    return {
+      x : lhs.y * rhs.z - lhs.z * rhs.y,
+      y : lhs.z * rhs.x - lhs.x * rhs.z,
+      z : lhs.x * rhs.y - lhs.y * rhs.x,
+      w : 0
+    };
+  }
+
+  static dot(lhs, rhs) {
+    if(lhs.w != 0 || rhs.w != 0){
+      console.warn("dot product not allowed: " + toString(lhs) + "x" + toString(rhs));
+    }
+
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+  }
+
+  static mul(scalar, vector) {
+    if(vector.w != 0) {
+      console.warn("scalar * vector not allowed", scalar, vector);
+    }
+
+    return {x : vector.x * scalar, y : vector.y * scalar, z : vector.z * scalar, w : vector.w};
+  }
+
+  static length(vector) {
+    return Math.sqrt(XRMathHelper.dot(vector, vector));
+  }
+
+  static normalize(vector) {
+    const l = XRMathHelper.length(vector);
+    return XRMathHelper.mul(1.0/l, vector);
+  }
+
+  // All |face|'s points and |point| must be co-planar.
+  static pointInFace(point, face) {
+    const normalize = XRMathHelper.normalize;
+    const sub = XRMathHelper.sub;
+    const length = XRMathHelper.length;
+    const cross = XRMathHelper.cross;
+
+    let onTheRight = null;
+    let previous_point = face[face.length - 1];
+
+    // |point| is in |face| if it's on the same side of all the edges.
+    for(let i = 0; i < face.length; ++i) {
+      const current_point = face[i];
+
+      const edge_direction = normalize(sub(current_point, previous_point));
+      const turn_direction = normalize(sub(point, current_point));
+
+      const sin_turn_angle = length(cross(edge_direction, turn_direction));
+
+      if(onTheRight == null) {
+        onTheRight = sin_turn_angle >= 0;
+      } else {
+        if(onTheRight && sin_turn_angle < 0) return false;
+        if(!onTheRight && sin_turn_angle > 0) return false;
+      }
+
+      previous_point = current_point;
+    }
+
+    return true;
+  }
+
+  static det2x2(m00, m01, m10, m11) {
+    return m00 * m11 - m01 * m10;
+  }
+
+  static det3x3(
+    m00, m01, m02,
+    m10, m11, m12,
+    m20, m21, m22
+  ){
+    const det2x2 = XRMathHelper.det2x2;
+
+    return    m00 * det2x2(m11, m12, m21, m22)
+            - m01 * det2x2(m10, m12, m20, m22)
+            + m02 * det2x2(m10, m11, m20, m21);
+  }
+
+  static det4x4(
+    m00, m01, m02, m03,
+    m10, m11, m12, m13,
+    m20, m21, m22, m23,
+    m30, m31, m32, m33
+  ) {
+    const det3x3 = XRMathHelper.det3x3;
+
+    return  m00 * det3x3(m11, m12, m13,
+                         m21, m22, m23,
+                         m31, m32, m33)
+          - m01 * det3x3(m10, m12, m13,
+                         m20, m22, m23,
+                         m30, m32, m33)
+          + m02 * det3x3(m10, m11, m13,
+                         m20, m21, m23,
+                         m30, m31, m33)
+          - m03 * det3x3(m10, m11, m12,
+                         m20, m21, m22,
+                         m30, m31, m32);
+  }
+
+  static inv2(m) {
+    // mij - i-th column, j-th row
+    const m00 = m[0],  m01 = m[1],  m02 = m[2],  m03 = m[3];
+    const m10 = m[4],  m11 = m[5],  m12 = m[6],  m13 = m[7];
+    const m20 = m[8],  m21 = m[9],  m22 = m[10], m23 = m[11];
+    const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
+
+    const det = det4x4(
+      m00, m01, m02, m03,
+      m10, m11, m12, m13,
+      m20, m21, m22, m23,
+      m30, m31, m32, m33
+    );
+  }
+
+  static transpose(m) {
+    const result = Array(16);
+    for (let i = 0; i < 4; i++)
+      for (let j = 0; j < 4; j++)
+        result[i * 4 + j] = m[j * 4 + i];
+    return result;
+  }
+
+  // Inverts the matrix, ported from transformation_matrix.cc.
+  static inverse(m) {
+    const det3x3 = XRMathHelper.det3x3;
+
+    // mij - i-th column, j-th row
+    const m00 = m[0],  m01 = m[1],  m02 = m[2],  m03 = m[3];
+    const m10 = m[4],  m11 = m[5],  m12 = m[6],  m13 = m[7];
+    const m20 = m[8],  m21 = m[9],  m22 = m[10], m23 = m[11];
+    const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
+
+    const det = XRMathHelper.det4x4(
+      m00, m01, m02, m03,
+      m10, m11, m12, m13,
+      m20, m21, m22, m23,
+      m30, m31, m32, m33
+    );
+
+    if (Math.abs(det) < 0.0001)
+      return null;
+
+    const invDet = 1.0 / det;
+    // Calculate `comatrix * 1/det`:
+    let result2 = [
+      // First column (m0r):
+      invDet * det3x3(m11, m12, m13, m21, m22, m23, m32, m32, m33),
+      invDet * det3x3(m10, m12, m13, m20, m22, m23, m30, m32, m33),
+      invDet * det3x3(m10, m11, m13, m20, m21, m23, m30, m31, m33),
+      invDet * det3x3(m10, m11, m12, m20, m21, m22, m30, m31, m32),
+      // Second column (m1r):
+      invDet * det3x3(m01, m02, m03, m21, m22, m23, m32, m32, m33),
+      invDet * det3x3(m00, m02, m03, m20, m22, m23, m30, m32, m33),
+      invDet * det3x3(m00, m01, m03, m20, m21, m23, m30, m31, m33),
+      invDet * det3x3(m00, m01, m02, m20, m21, m22, m30, m31, m32),
+      // Third column (m2r):
+      invDet * det3x3(m01, m02, m03, m11, m12, m13, m31, m32, m33),
+      invDet * det3x3(m00, m02, m03, m10, m12, m13, m30, m32, m33),
+      invDet * det3x3(m00, m01, m03, m10, m11, m13, m30, m31, m33),
+      invDet * det3x3(m00, m01, m02, m10, m11, m12, m30, m31, m32),
+      // Fourth column (m3r):
+      invDet * det3x3(m01, m02, m03, m11, m12, m13, m21, m22, m23),
+      invDet * det3x3(m00, m02, m03, m10, m12, m13, m20, m22, m23),
+      invDet * det3x3(m00, m01, m03, m10, m11, m13, m20, m21, m23),
+      invDet * det3x3(m00, m01, m02, m10, m11, m12, m20, m21, m22),
+    ];
+
+    // Actual inverse is `1/det * transposed(comatrix)`:
+    return XRMathHelper.transpose(result2);
   }
 }
 
