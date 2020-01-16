@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<title>Sanity test of near-zero background-size</title>
+<link rel="help" href="https://drafts.csswg.org/css-backgrounds">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>test(() => {}, 'passes if no crash');</script>
+<div style="background-image: url(support/rectangle-2560x208.svg);
+            width: 200px; height: 200px; background-size: 0.2px; 0.2px">
+</div>
