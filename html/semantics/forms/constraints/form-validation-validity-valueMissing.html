@@ -25,13 +25,13 @@
       testData: [
         {conditions: {required: false, value: ""}, expected: false, name: "[target] The required attribute is not set"},
         {conditions: {required: true, value: "2000-12-10T12:00:00"}, expected: false, name: "[target] Valid local date and time string(2000-12-10T12:00:00)"},
-        {conditions: {required: true, value: "2000-12-10 12:00"}, expected: false, name: "[target] Valid local date and time string(2000-12-10 12:00)"},
+        {conditions: {required: true, value: "2000-12-10T12:00"}, expected: false, name: "[target] Valid local date and time string(2000-12-10T12:00)"},
         {conditions: {required: true, value: "1979-10-14T12:00:00.001"}, expected: false, name: "[target] Valid local date and time string(1979-10-14T12:00:00.001)"},
         {conditions: {required: true, value: 1234567}, expected: true, expectedImmutable: false, name: "[target] The value attribute is a number(1234567)"},
         {conditions: {required: true, value: new Date()}, expected: true, expectedImmutable: false, name: "[target] The value attribute is a Date object"},
-        {conditions: {required: true, value: "1979-10-99 99:99"}, expected: true, expectedImmutable: false, name: "[target] Invalid local date and time string(1979-10-99 99:99)"},
-        {conditions: {required: true, value: "1979-10-14 12:00:00"}, expected: false, name: "[target] Valid local date and time string(1979-10-14 12:00:00)"},
-        {conditions: {required: true, value: "2001-12-21  12:00"}, expected: true, expectedImmutable: false, name: "[target] Invalid local date and time string(2001-12-21  12:00)-two white space"},
+        {conditions: {required: true, value: "1979-10-99T99:99"}, expected: true, expectedImmutable: false, name: "[target] Invalid local date and time string(1979-10-99T99:99)"},
+        {conditions: {required: true, value: "1979-10-14T12:00:00"}, expected: false, name: "[target] Valid local date and time string(1979-10-14 12:00:00)"},
+        {conditions: {required: true, value: "2001-12-21 12:00"}, expected: true, expectedImmutable: false, name: "[target] Invalid local date and time string(2001-12-21 12:00)-space instead of T"},
         {conditions: {required: true, value: "abc"}, expected: true, expectedImmutable: false, name: "[target] the value attribute is a string(abc)"},
         {conditions: {required: true, value: ""}, expected: true, expectedImmutable: false, name: "[target] The value attribute is empty string"}
       ]
